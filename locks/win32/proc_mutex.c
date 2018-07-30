@@ -165,30 +165,32 @@ APR_DECLARE(apr_status_t) apr_proc_mutex_trylock(apr_proc_mutex_t *mutex)
 }
 
 APR_DECLARE(apr_status_t) apr_proc_mutex_timedlock(apr_proc_mutex_t *mutex,
-                                                   apr_time_t timeout,
-                                                   int absolute)
+                                               apr_interval_time_t timeout)
 {
-    DWORD rv;
+    DWORD rv, timeout_ms = 0;
+    apr_interval_time_t t = timeout;
 
-    if (timeout < 0) {
-        rv = WaitForSingleObject(mutex->handle, INFINITE);
-    }
-    else {
-        if (absolute) {
-            apr_time_t now = apr_time_now();
-            if (timeout > now) {
-                timeout -= now;
+    do {
+        if (t > 0) {
+            /* Given timeout is 64bit usecs whereas Windows timeouts are
+             * 32bit msecs and below INFINITE (2^32 - 1), so we may need
+             * multiple timed out waits...
+             */
+            if (t > apr_time_from_msec(INFINITE - 1)) {
+                timeout_ms = INFINITE - 1;
+                t -= apr_time_from_msec(INFINITE - 1);
             }
             else {
-                timeout = 0;
+                timeout_ms = (DWORD)apr_time_as_msec(t);
+                t = 0;
             }
         }
-        rv = WaitForSingleObject(mutex->handle, apr_time_as_msec(timeout));
-        if (rv == WAIT_TIMEOUT) {
-            return APR_TIMEUP;
-        }
-    }
+        rv = WaitForSingleObject(mutex->handle, timeout_ms);
+    } while (rv == WAIT_TIMEOUT && t > 0);
 
+    if (rv == WAIT_TIMEOUT) {
+        return APR_TIMEUP;
+    }
     if (rv == WAIT_OBJECT_0 || rv == WAIT_ABANDONED) {
         return APR_SUCCESS;
     } 
@@ -226,7 +228,7 @@ APR_DECLARE(const char *) apr_proc_mutex_lockfile(apr_proc_mutex_t *mutex)
 
 APR_DECLARE(apr_lockmech_e) apr_proc_mutex_mech(apr_proc_mutex_t *mutex)
 {
-    return APR_LOCK_DEFAULT_TIMED;
+    return APR_LOCK_DEFAULT;
 }
 
 APR_DECLARE(const char *) apr_proc_mutex_name(apr_proc_mutex_t *mutex)
@@ -251,7 +253,7 @@ APR_DECLARE(apr_status_t) apr_os_proc_mutex_get_ex(apr_os_proc_mutex_t *ospmutex
 {
     *ospmutex = pmutex->handle;
     if (mech) {
-        *mech = APR_LOCK_DEFAULT_TIMED;
+        *mech = APR_LOCK_DEFAULT;
     }
     return APR_SUCCESS;
 }
@@ -293,7 +295,7 @@ APR_DECLARE(apr_status_t) apr_os_proc_mutex_put(apr_proc_mutex_t **pmutex,
                                                 apr_os_proc_mutex_t *ospmutex,
                                                 apr_pool_t *pool)
 {
-    return apr_os_proc_mutex_put_ex(pmutex, ospmutex, APR_LOCK_DEFAULT_TIMED,
+    return apr_os_proc_mutex_put_ex(pmutex, ospmutex, APR_LOCK_DEFAULT,
                                     0, pool);
 }
 

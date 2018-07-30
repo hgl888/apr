@@ -170,7 +170,7 @@ APR_DECLARE(int) apr_base64_decode_binary(unsigned char *bufplain,
 	nprbytes -= 4;
     }
 
-    /* Note: (nprbytes == 1) would be an error, so just ingore that case */
+    /* Note: (nprbytes == 1) would be an error, so just ignore that case */
     if (nprbytes > 1) {
 	*(bufout++) =
 	    (unsigned char) (pr2six[*bufin] << 2 | pr2six[bufin[1]] >> 4);
@@ -285,7 +285,7 @@ APR_DECLARE(char *) apr_pbase64_encode(apr_pool_t *p, const char *string)
     char *encoded;
     int l = strlen(string);
 
-    encoded = (char *) apr_palloc(p, 1 + apr_base64_encode_len(l));
+    encoded = (char *) apr_palloc(p, apr_base64_encode_len(l));
     l = apr_base64_encode(encoded, string, l);
     encoded[l] = '\0'; /* make binary sequence into string */
 

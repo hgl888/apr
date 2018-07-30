@@ -334,6 +334,7 @@ typedef  @int_value@             apr_int32_t;
 typedef  unsigned @int_value@    apr_uint32_t;
 
 #define APR_SIZEOF_VOIDP @voidp_size@
+#define APR_SIZEOF_OFF_T @off_t_size@
 
 /*
  * Darwin 10's default compiler (gcc42) builds for both 64 and
@@ -683,6 +684,7 @@ typedef int apr_wait_t;
 #define APU_HAVE_ODBC          @apu_have_odbc@
 
 #define APU_HAVE_CRYPTO        @apu_have_crypto@
+#define APU_HAVE_CRYPTO_PRNG   @apu_have_crypto_prng@
 #define APU_HAVE_OPENSSL       @apu_have_openssl@
 #define APU_HAVE_NSS           @apu_have_nss@
 #define APU_HAVE_COMMONCRYPTO  @apu_have_commoncrypto@

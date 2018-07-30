@@ -188,6 +188,7 @@ SET(APR_PUBLIC_HEADERS_STATIC
   include/apr_proc_mutex.h
   include/apr_queue.h
   include/apr_random.h
+  include/apr_redis.h
   include/apr_reslist.h
   include/apr_ring.h
   include/apr_rmm.h
@@ -195,6 +196,7 @@ SET(APR_PUBLIC_HEADERS_STATIC
   include/apr_sha1.h
   include/apr_shm.h
   include/apr_signal.h
+  include/apr_siphash.h
   include/apr_skiplist.h
   include/apr_strings.h
   include/apr_strmatch.h
@@ -237,10 +239,13 @@ SET(APR_SOURCES
   buckets/apr_buckets_simple.c
   buckets/apr_buckets_socket.c
   crypto/apr_crypto.c
+  crypto/apr_crypto_prng.c
+  crypto/apr_crypto_internal.c
   crypto/apr_md4.c
   crypto/apr_md5.c
   crypto/apr_passwd.c
   crypto/apr_sha1.c
+  crypto/apr_siphash.c
   crypto/crypt_blowfish.c
   crypto/getuuid.c
   crypto/uuid.c
@@ -308,6 +313,7 @@ SET(APR_SOURCES
   random/unix/apr_random.c
   random/unix/sha2.c
   random/unix/sha2_glue.c
+  redis/apr_redis.c
   shmem/win32/shm.c
   strings/apr_cpystrn.c
   strings/apr_cstr.c
@@ -388,9 +394,11 @@ SET(APR_TEST_SOURCES
   test/testprocmutex.c
   test/testqueue.c
   test/testrand.c
+  test/testredis.c
   test/testreslist.c
   test/testrmm.c
   test/testshm.c
+  test/testsiphash.c
   test/testskiplist.c
   test/testsleep.c
   test/testsock.c

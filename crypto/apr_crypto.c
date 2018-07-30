@@ -37,8 +37,6 @@ static apr_hash_t *drivers = NULL;
 
 #define ERROR_SIZE 1024
 
-#define CLEANUP_CAST (apr_status_t (*)(void*))
-
 APR_TYPEDEF_STRUCT(apr_crypto_t,
     apr_pool_t *pool;
     apr_crypto_driver_t *provider;
@@ -51,6 +49,12 @@ APR_TYPEDEF_STRUCT(apr_crypto_key_t,
 )
 
 APR_TYPEDEF_STRUCT(apr_crypto_block_t,
+    apr_pool_t *pool;
+    apr_crypto_driver_t *provider;
+    const apr_crypto_t *f;
+)
+
+APR_TYPEDEF_STRUCT(apr_crypto_digest_t,
     apr_pool_t *pool;
     apr_crypto_driver_t *provider;
     const apr_crypto_t *f;
@@ -86,35 +90,54 @@ static apr_status_t apr_crypto_term(void *ptr)
 
 APR_DECLARE(apr_status_t) apr_crypto_init(apr_pool_t *pool)
 {
-    apr_status_t ret = APR_SUCCESS;
-    apr_pool_t *parent;
+    apr_pool_t *rootp;
+#if APU_HAVE_CRYPTO_PRNG
+    apr_status_t rv;
+    int flags = 0;
+#endif
 
     if (drivers != NULL) {
         return APR_SUCCESS;
     }
 
-    /* Top level pool scope, need process-scope lifetime */
-    for (parent = apr_pool_parent_get(pool);
-         parent && parent != pool;
-         parent = apr_pool_parent_get(pool))
-        pool = parent;
+    /* Top level pool scope, for drivers' process-scope lifetime */
+    rootp = pool;
+    for (;;) {
+        apr_pool_t *p = apr_pool_parent_get(rootp);
+        if (!p || p == rootp) {
+            break;
+        }
+        rootp = p;
+    }
 #if APR_HAVE_MODULAR_DSO
     /* deprecate in 2.0 - permit implicit initialization */
-    apu_dso_init(pool);
+    apu_dso_init(rootp);
 #endif
-    drivers = apr_hash_make(pool);
+    drivers = apr_hash_make(rootp);
+    apr_pool_cleanup_register(rootp, NULL, apr_crypto_term,
+                              apr_pool_cleanup_null);
 
-    apr_pool_cleanup_register(pool, NULL, apr_crypto_term,
-            apr_pool_cleanup_null);
+#if APU_HAVE_CRYPTO_PRNG
+    /* apr_crypto_prng_init() may already have been called with
+     * non-default parameters, so ignore APR_EREINIT.
+     */
+#if APR_HAS_THREADS
+    flags = APR_CRYPTO_PRNG_PER_THREAD;
+#endif
+    rv = apr_crypto_prng_init(pool, 0, NULL, flags);
+    if (rv != APR_SUCCESS && rv != APR_EREINIT) {
+        return rv;
+    }
+#endif
 
-    return ret;
+    return APR_SUCCESS;
 }
 
 static apr_status_t crypto_clear(void *ptr)
 {
     apr_crypto_clear_t *clear = (apr_crypto_clear_t *)ptr;
 
-    memset(clear->buffer, 0, clear->size);
+    apr_crypto_memzero(clear->buffer, clear->size);
     clear->buffer = NULL;
     clear->size = 0;
 
@@ -135,6 +158,71 @@ APR_DECLARE(apr_status_t) apr_crypto_clear(apr_pool_t *pool,
     return APR_SUCCESS;
 }
 
+#if defined(HAVE_WEAK_SYMBOLS)
+void apr__memzero_explicit(void *buffer, apr_size_t size);
+
+__attribute__ ((weak))
+void apr__memzero_explicit(void *buffer, apr_size_t size)
+{
+    memset(buffer, 0, size);
+}
+#endif
+
+APR_DECLARE(apr_status_t) apr_crypto_memzero(void *buffer, apr_size_t size)
+{
+#if defined(WIN32)
+    SecureZeroMemory(buffer, size);
+#elif defined(HAVE_MEMSET_S)
+    if (size) {
+        return memset_s(buffer, (rsize_t)size, 0, (rsize_t)size);
+    }
+#elif defined(HAVE_EXPLICIT_BZERO)
+    explicit_bzero(buffer, size);
+#elif defined(HAVE_WEAK_SYMBOLS)
+    apr__memzero_explicit(buffer, size);
+#else
+    apr_size_t i;
+    volatile unsigned char *volatile ptr = buffer;
+    for (i = 0; i < size; ++i) {
+        ptr[i] = 0;
+    }
+#endif
+    return APR_SUCCESS;
+}
+
+APR_DECLARE(int) apr_crypto_equals(const void *buf1, const void *buf2,
+                                   apr_size_t size)
+{
+    const unsigned char *p1 = buf1;
+    const unsigned char *p2 = buf2;
+    unsigned char diff = 0;
+    apr_size_t i;
+
+    for (i = 0; i < size; ++i) {
+        diff |= p1[i] ^ p2[i];
+    }
+
+    return 1 & ((diff - 1) >> 8);
+}
+
+APR_DECLARE(apr_crypto_key_rec_t *) apr_crypto_key_rec_make(
+        apr_crypto_key_type ktype, apr_pool_t *p)
+{
+    apr_crypto_key_rec_t *key = apr_pcalloc(p, sizeof(apr_crypto_key_rec_t));
+    key->ktype = ktype;
+    return key;
+}
+
+APR_DECLARE(apr_crypto_digest_rec_t *) apr_crypto_digest_rec_make(
+         apr_crypto_digest_type_e dtype, apr_pool_t *p)
+{
+    apr_crypto_digest_rec_t *rec = apr_pcalloc(p, sizeof(apr_crypto_digest_rec_t));
+    if (rec) {
+        rec->dtype = dtype;
+    }
+    return rec;
+}
+
 APR_DECLARE(apr_status_t) apr_crypto_get_driver(
         const apr_crypto_driver_t **driver, const char *name,
         const char *params, const apu_err_t **result, apr_pool_t *pool)
@@ -144,6 +232,7 @@ APR_DECLARE(apr_status_t) apr_crypto_get_driver(
     char symname[34];
     apr_dso_handle_t *dso;
     apr_dso_handle_sym_t symbol;
+    apr_pool_t *rootp;
 #endif
     apr_status_t rv;
 
@@ -168,7 +257,7 @@ APR_DECLARE(apr_status_t) apr_crypto_get_driver(
 #if APR_HAVE_MODULAR_DSO
     /* The driver DSO must have exactly the same lifetime as the
      * drivers hash table; ignore the passed-in pool */
-    pool = apr_hash_pool_get(drivers);
+    rootp = apr_hash_pool_get(drivers);
 
 #if defined(NETWARE)
     apr_snprintf(modname, sizeof(modname), "crypto%s.nlm", name);
@@ -180,17 +269,19 @@ APR_DECLARE(apr_status_t) apr_crypto_get_driver(
             "apr_crypto_%s-" APR_STRINGIFY(APR_MAJOR_VERSION) ".so", name);
 #endif
     apr_snprintf(symname, sizeof(symname), "apr_crypto_%s_driver", name);
-    rv = apu_dso_load(&dso, &symbol, modname, symname, pool);
+    rv = apu_dso_load(&dso, &symbol, modname, symname, rootp);
     if (rv == APR_SUCCESS || rv == APR_EINIT) { /* previously loaded?!? */
         apr_crypto_driver_t *d = symbol;
         rv = APR_SUCCESS;
         if (d->init) {
-            rv = d->init(pool, params, result);
+            rv = d->init(rootp, params, result);
+            if (rv == APR_EREINIT) {
+                rv = APR_SUCCESS;
+            }
         }
-        if (APR_SUCCESS == rv) {
-            *driver = symbol;
-            name = apr_pstrdup(pool, name);
-            apr_hash_set(drivers, name, APR_HASH_KEY_STRING, *driver);
+        if (rv == APR_SUCCESS) {
+            apr_hash_set(drivers, d->name, APR_HASH_KEY_STRING, d);
+            *driver = d;
         }
     }
     apu_dso_mutex_unlock();
@@ -211,34 +302,324 @@ APR_DECLARE(apr_status_t) apr_crypto_get_driver(
 
     /* Load statically-linked drivers: */
 #if APU_HAVE_OPENSSL
-    if (name[0] == 'o' && !strcmp(name, "openssl")) {
+    if (!strcmp(name, "openssl")) {
         DRIVER_LOAD("openssl", apr_crypto_openssl_driver, pool, params, rv, result);
     }
+    else
 #endif
 #if APU_HAVE_NSS
-    if (name[0] == 'n' && !strcmp(name, "nss")) {
+    if (!strcmp(name, "nss")) {
         DRIVER_LOAD("nss", apr_crypto_nss_driver, pool, params, rv, result);
     }
+    else
 #endif
 #if APU_HAVE_COMMONCRYPTO
-    if (name[0] == 'c' && !strcmp(name, "commoncrypto")) {
+    if (!strcmp(name, "commoncrypto")) {
         DRIVER_LOAD("commoncrypto", apr_crypto_commoncrypto_driver, pool, params, rv, result);
     }
+    else
 #endif
 #if APU_HAVE_MSCAPI
-    if (name[0] == 'm' && !strcmp(name, "mscapi")) {
+    if (!strcmp(name, "mscapi")) {
         DRIVER_LOAD("mscapi", apr_crypto_mscapi_driver, pool, params, rv, result);
     }
+    else
 #endif
 #if APU_HAVE_MSCNG
-    if (name[0] == 'm' && !strcmp(name, "mscng")) {
+    if (!strcmp(name, "mscng")) {
         DRIVER_LOAD("mscng", apr_crypto_mscng_driver, pool, params, rv, result);
     }
+    else
 #endif
+    ;
 
-#endif
+#endif /* !APR_HAVE_MODULAR_DSO */
 
     return rv;
+}
+
+struct crypto_lib {
+    const char *name;
+    apr_pool_t *pool;
+    apr_status_t (*term)(void);
+    struct crypto_lib *next;
+};
+static apr_hash_t *active_libs = NULL;
+static struct crypto_lib *spare_libs = NULL;
+
+static apr_status_t crypto_libs_cleanup(void *nil)
+{
+    active_libs = NULL;
+    spare_libs = NULL;
+    return APR_SUCCESS;
+}
+
+static void spare_lib_push(struct crypto_lib *lib)
+{
+    lib->name = NULL;
+    lib->pool = NULL;
+    lib->term = NULL;
+    lib->next = spare_libs;
+    spare_libs = lib;
+}
+
+static struct crypto_lib *spare_lib_pop(void)
+{
+    struct crypto_lib *lib;
+    lib = spare_libs;
+    if (lib) {
+        spare_libs = lib->next;
+        lib->next = NULL;
+    }
+    return lib;
+}
+
+static apr_status_t crypto_lib_free(struct crypto_lib *lib)
+{
+    apr_status_t rv;
+
+    apr_hash_set(active_libs, lib->name, APR_HASH_KEY_STRING, NULL);
+    rv = lib->term();
+    spare_lib_push(lib);
+
+    return rv;
+}
+
+static apr_status_t crypto_lib_cleanup(void *arg)
+{
+    crypto_lib_free(arg);
+
+    return APR_SUCCESS;
+}
+
+APR_DECLARE(apr_status_t) apr_crypto_lib_version(const char *name,
+                                                 const char **version)
+{
+    apr_status_t rv = APR_ENOTIMPL;
+#if APU_HAVE_OPENSSL
+    if (!strcmp(name, "openssl")) {
+        *version = apr__crypto_openssl_version();
+        rv = *version ? APR_SUCCESS : APR_NOTFOUND;
+    }
+    else
+#endif
+#if APU_HAVE_NSS
+    if (!strcmp(name, "nss")) {
+        *version = apr__crypto_nss_version();
+        rv = *version ? APR_SUCCESS : APR_NOTFOUND;
+    }
+    else
+#endif
+#if APU_HAVE_COMMONCRYPTO
+    if (!strcmp(name, "commoncrypto")) {
+        *version = apr__crypto_commoncrypto_version();
+        rv = *version ? APR_SUCCESS : APR_NOTFOUND;
+    }
+    else
+#endif
+#if APU_HAVE_MSCAPI
+    if (!strcmp(name, "mscapi")) {
+        *version = apr__crypto_mscapi_version();
+        rv = *version ? APR_SUCCESS : APR_NOTFOUND;
+    }
+    else
+#endif
+#if APU_HAVE_MSCNG
+    if (!strcmp(name, "mscng")) {
+        *version = apr__crypto_mscng_version();
+        rv = *version ? APR_SUCCESS : APR_NOTFOUND;
+    }
+    else
+#endif
+    ;
+    return rv;
+}
+
+APR_DECLARE(apr_status_t) apr_crypto_lib_init(const char *name,
+                                              const char *params,
+                                              const apu_err_t **result,
+                                              apr_pool_t *pool)
+{
+    apr_status_t rv;
+    apr_pool_t *rootp;
+    struct crypto_lib *lib;
+
+    if (!name) {
+        return APR_EINVAL;
+    }
+
+    if (apr_crypto_lib_is_active(name)) {
+        return APR_EREINIT;
+    }
+
+    rootp = pool;
+    for (;;) {
+        apr_pool_t *p = apr_pool_parent_get(rootp);
+        if (!p || p == rootp) {
+            break;
+        }
+        rootp = p;
+    }
+
+    if (!active_libs) {
+        active_libs = apr_hash_make(rootp);
+        if (!active_libs) {
+            return APR_ENOMEM;
+        }
+        apr_pool_cleanup_register(rootp, NULL, crypto_libs_cleanup,
+                                  apr_pool_cleanup_null);
+    }
+
+    lib = spare_lib_pop();
+    if (!lib) {
+        lib = apr_pcalloc(rootp, sizeof(*lib));
+        if (!lib) {
+            return APR_ENOMEM;
+        }
+    }
+
+    rv = APR_ENOTIMPL;
+#if APU_HAVE_OPENSSL
+    if (!strcmp(name, "openssl")) {
+        rv = apr__crypto_openssl_init(params, result, pool);
+        if (rv == APR_SUCCESS) {
+            lib->term = apr__crypto_openssl_term;
+            lib->name = "openssl";
+        }
+    }
+    else
+#endif
+#if APU_HAVE_NSS
+    if (!strcmp(name, "nss")) {
+        rv = apr__crypto_nss_init(params, result, pool);
+        if (rv == APR_SUCCESS) {
+            lib->term = apr__crypto_nss_term;
+            lib->name = "nss";
+        }
+    }
+    else
+#endif
+#if APU_HAVE_COMMONCRYPTO
+    if (!strcmp(name, "commoncrypto")) {
+        rv = apr__crypto_commoncrypto_init(params, result, pool);
+        if (rv == APR_SUCCESS) {
+            lib->term = apr__crypto_commoncrypto_term;
+            lib->name = "commoncrypto";
+        }
+    }
+    else
+#endif
+#if APU_HAVE_MSCAPI
+    if (!strcmp(name, "mscapi")) {
+        rv = apr__crypto_mscapi_init(params, result, pool);
+        if (rv == APR_SUCCESS) {
+            lib->term = apr__crypto_mscapi_term;
+            lib->name = "mscapi";
+        }
+    }
+    else
+#endif
+#if APU_HAVE_MSCNG
+    if (!strcmp(name, "mscng")) {
+        rv = apr__crypto_mscng_init(params, result, pool);
+        if (rv == APR_SUCCESS) {
+            lib->term = apr__crypto_mscng_term;
+            lib->name = "mscng";
+        }
+    }
+    else
+#endif
+    ;
+    if (rv == APR_SUCCESS) {
+        lib->pool = pool;
+        apr_hash_set(active_libs, lib->name, APR_HASH_KEY_STRING, lib);
+        if (apr_pool_parent_get(pool)) {
+            apr_pool_cleanup_register(pool, lib, crypto_lib_cleanup,
+                                      apr_pool_cleanup_null);
+        }
+    }
+    else {
+        spare_lib_push(lib);
+    }
+    return rv;
+}
+
+static apr_status_t crypto_lib_term(const char *name)
+{
+    apr_status_t rv;
+    struct crypto_lib *lib;
+
+    lib = apr_hash_get(active_libs, name, APR_HASH_KEY_STRING);
+    if (!lib) {
+        return APR_EINIT;
+    }
+    if (!apr_pool_parent_get(lib->pool)) {
+        return APR_EBUSY;
+    }
+
+    rv = APR_ENOTIMPL;
+#if APU_HAVE_OPENSSL
+    if (!strcmp(name, "openssl")) {
+        rv = APR_SUCCESS;
+    }
+    else
+#endif
+#if APU_HAVE_NSS
+    if (!strcmp(name, "nss")) {
+        rv = APR_SUCCESS;
+    }
+    else
+#endif
+#if APU_HAVE_COMMONCRYPTO
+    if (!strcmp(name, "commoncrypto")) {
+        rv = APR_SUCCESS;
+    }
+    else
+#endif
+#if APU_HAVE_MSCAPI
+    if (!strcmp(name, "mscapi")) {
+        rv = APR_SUCCESS;
+    }
+    else
+#endif
+#if APU_HAVE_MSCNG
+    if (!strcmp(name, "mscng")) {
+        rv = APR_SUCCESS;
+    }
+    else
+#endif
+    ;
+    if (rv == APR_SUCCESS) {
+        apr_pool_cleanup_kill(lib->pool, lib, crypto_lib_cleanup);
+        rv = crypto_lib_free(lib);
+    }
+    return rv;
+}
+
+APR_DECLARE(apr_status_t) apr_crypto_lib_term(const char *name)
+{
+    if (!active_libs) {
+        return APR_EINIT;
+    }
+
+    if (!name) {
+        apr_status_t rv = APR_SUCCESS;
+        apr_hash_index_t *hi = apr_hash_first(NULL, active_libs);
+        for (; hi; hi = apr_hash_next(hi)) {
+            apr_status_t rt = crypto_lib_term(apr_hash_this_key(hi));
+            if (rt != APR_SUCCESS && (rv == APR_SUCCESS || rv == APR_EBUSY)) {
+                rv = rt;
+            }
+        }
+        return rv;
+    }
+
+    return crypto_lib_term(name);
+}
+
+APR_DECLARE(int) apr_crypto_lib_is_active(const char *name)
+{
+    return active_libs && apr_hash_get(active_libs, name, APR_HASH_KEY_STRING);
 }
 
 /**
@@ -285,6 +666,21 @@ APR_DECLARE(apr_status_t) apr_crypto_make(apr_crypto_t **f,
         const apr_crypto_driver_t *driver, const char *params, apr_pool_t *pool)
 {
     return driver->make(f, driver, params, pool);
+}
+
+/**
+ * @brief Get a hash table of digests, keyed by the name of the digest against
+ * a pointer to apr_crypto_digest_t, which in turn begins with an
+ * integer.
+ *
+ * @param digests - hashtable of digests keyed to constants.
+ * @param f - encryption context
+ * @return APR_SUCCESS for success
+ */
+APR_DECLARE(apr_status_t) apr_crypto_get_block_key_digests(apr_hash_t **digests,
+        const apr_crypto_t *f)
+{
+    return f->provider->get_block_key_digests(digests, f);
 }
 
 /**
@@ -519,6 +915,30 @@ APR_DECLARE(apr_status_t) apr_crypto_block_decrypt_finish(unsigned char *out,
     return ctx->provider->block_decrypt_finish(out, outlen, ctx);
 }
 
+APR_DECLARE(apr_status_t) apr_crypto_digest_init(apr_crypto_digest_t **d,
+        const apr_crypto_key_t *key, apr_crypto_digest_rec_t *rec, apr_pool_t *p)
+{
+    return key->provider->digest_init(d, key, rec, p);
+}
+
+APR_DECLARE(apr_status_t) apr_crypto_digest_update(apr_crypto_digest_t *digest,
+        const unsigned char *in, apr_size_t inlen)
+{
+    return digest->provider->digest_update(digest, in, inlen);
+}
+
+APR_DECLARE(apr_status_t) apr_crypto_digest_final(apr_crypto_digest_t *digest)
+{
+    return digest->provider->digest_final(digest);
+}
+
+APR_DECLARE(apr_status_t) apr_crypto_digest(const apr_crypto_key_t *key,
+        apr_crypto_digest_rec_t *rec, const unsigned char *in, apr_size_t inlen,
+        apr_pool_t *p)
+{
+    return key->provider->digest(key, rec, in, inlen, p);
+}
+
 /**
  * @brief Clean encryption / decryption context.
  * @note After cleanup, a context is free to be reused if necessary.
@@ -528,6 +948,17 @@ APR_DECLARE(apr_status_t) apr_crypto_block_decrypt_finish(unsigned char *out,
 APR_DECLARE(apr_status_t) apr_crypto_block_cleanup(apr_crypto_block_t *ctx)
 {
     return ctx->provider->block_cleanup(ctx);
+}
+
+/**
+ * @brief Clean sign / verify context.
+ * @note After cleanup, a context is free to be reused if necessary.
+ * @param ctx The digest context to use.
+ * @return Returns APR_ENOTIMPL if not supported.
+ */
+APR_DECLARE(apr_status_t) apr_crypto_digest_cleanup(apr_crypto_digest_t *ctx)
+{
+    return ctx->provider->digest_cleanup(ctx);
 }
 
 /**

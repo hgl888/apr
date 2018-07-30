@@ -70,6 +70,7 @@ abts_suite *testatomic(abts_suite *suite);
 abts_suite *testdir(abts_suite *suite);
 abts_suite *testdso(abts_suite *suite);
 abts_suite *testdup(abts_suite *suite);
+abts_suite *testencode(abts_suite *suite);
 abts_suite *testenv(abts_suite *suite);
 abts_suite *testfile(abts_suite *suite);
 abts_suite *testfilecopy(abts_suite *suite);
@@ -123,6 +124,7 @@ abts_suite *testcrypto(abts_suite *suite);
 abts_suite *testdbd(abts_suite *suite);
 abts_suite *testdate(abts_suite *suite);
 abts_suite *testmemcache(abts_suite *suite);
+abts_suite *testredis(abts_suite *suite);
 abts_suite *testreslist(abts_suite *suite);
 abts_suite *testqueue(abts_suite *suite);
 abts_suite *testxml(abts_suite *suite);
@@ -131,5 +133,7 @@ abts_suite *testrmm(abts_suite *suite);
 abts_suite *testdbm(abts_suite *suite);
 abts_suite *testlfsabi(abts_suite *suite);
 abts_suite *testskiplist(abts_suite *suite);
+abts_suite *testsiphash(abts_suite *suite);
+abts_suite *testjson(abts_suite *suite);
 
 #endif /* APR_TEST_INCLUDES */

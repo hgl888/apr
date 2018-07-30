@@ -61,13 +61,18 @@ struct apr_reslist_t {
 };
 
 /**
- * Grab a resource from the front of the resource list.
+ * Grab a resource from the resource list, latest or oldest depending on fifo.
  * Assumes: that the reslist is locked.
  */
-static apr_res_t *pop_resource(apr_reslist_t *reslist)
+static apr_res_t *pop_resource(apr_reslist_t *reslist, int fifo)
 {
     apr_res_t *res;
-    res = APR_RING_FIRST(&reslist->avail_list);
+    if (fifo) {
+        res = APR_RING_LAST(&reslist->avail_list);
+    }
+    else {
+        res = APR_RING_FIRST(&reslist->avail_list);
+    }
     APR_RING_REMOVE(res, link);
     reslist->nidle--;
     return res;
@@ -78,11 +83,23 @@ static apr_res_t *pop_resource(apr_reslist_t *reslist)
  * it was added to the list.
  * Assumes: that the reslist is locked.
  */
-static void push_resource(apr_reslist_t *reslist, apr_res_t *resource)
+static apr_status_t push_resource(apr_reslist_t *reslist,
+                                  apr_res_t *resource, int new)
 {
     APR_RING_INSERT_HEAD(&reslist->avail_list, resource, apr_res_t, link);
-    resource->freed = apr_time_now();
+    if (reslist->ttl) {
+        resource->freed = apr_time_now();
+    }
     reslist->nidle++;
+    if (new) {
+        reslist->ntotal++;
+    }
+#if APR_HAS_THREADS
+    /* If someone is waiting on that guy, wake them up. */
+    return apr_thread_cond_signal(reslist->avail);
+#else
+    return APR_SUCCESS;
+#endif
 }
 
 /**
@@ -148,7 +165,7 @@ static apr_status_t reslist_cleanup(void *data_)
 
     while (rl->nidle > 0) {
         apr_status_t rv1;
-        res = pop_resource(rl);
+        res = pop_resource(rl, 0);
         rl->ntotal--;
         rv1 = destroy_resource(rl, res);
         if (rv1 != APR_SUCCESS) {
@@ -174,17 +191,12 @@ static apr_status_t reslist_cleanup(void *data_)
  * Perform routine maintenance on the resource list. This call
  * may instantiate new resources or expire old resources.
  */
-APR_DECLARE(apr_status_t) apr_reslist_maintain(apr_reslist_t *reslist)
+static apr_status_t reslist_maintain(apr_reslist_t *reslist)
 {
     apr_time_t now;
     apr_status_t rv;
     apr_res_t *res;
     int created_one = 0;
-
-#if APR_HAS_THREADS
-    apr_thread_mutex_lock(reslist->listlock);
-    apr_pool_owner_set(reslist->pool, 0);
-#endif
 
     /* Check if we need to create more resources, and if we are allowed to. */
     while (reslist->nidle < reslist->min && reslist->ntotal < reslist->hmax) {
@@ -192,62 +204,60 @@ APR_DECLARE(apr_status_t) apr_reslist_maintain(apr_reslist_t *reslist)
         rv = create_resource(reslist, &res);
         if (rv != APR_SUCCESS) {
             free_container(reslist, res);
-#if APR_HAS_THREADS
-            apr_thread_mutex_unlock(reslist->listlock);
-#endif
             return rv;
         }
         /* Add it to the list */
-        push_resource(reslist, res);
-        /* Update our counters */
-        reslist->ntotal++;
-        /* If someone is waiting on that guy, wake them up. */
-#if APR_HAS_THREADS
-        rv = apr_thread_cond_signal(reslist->avail);
+        rv = push_resource(reslist, res, 1);
         if (rv != APR_SUCCESS) {
-            apr_thread_mutex_unlock(reslist->listlock);
             return rv;
         }
-#endif
         created_one++;
     }
 
-    /* We don't need to see if we're over the max if we were under it before */
-    if (created_one) {
-#if APR_HAS_THREADS
-        apr_thread_mutex_unlock(reslist->listlock);
-#endif
+    /* We don't need to see if we're over the max if we were under it before,
+     * nor need we check for expiry if no ttl is configure.
+     */
+    if (created_one || !reslist->ttl) {
         return APR_SUCCESS;
     }
 
     /* Check if we need to expire old resources */
     now = apr_time_now();
     while (reslist->nidle > reslist->smax && reslist->nidle > 0) {
-        /* Peak at the last resource in the list */
+        /* Peek at the oldest resource in the list */
         res = APR_RING_LAST(&reslist->avail_list);
-        /* See if the oldest entry should be expired */
         if (now - res->freed < reslist->ttl) {
             /* If this entry is too young, none of the others
              * will be ready to be expired either, so we are done. */
             break;
         }
+        /* this res is expired - kill it */
         APR_RING_REMOVE(res, link);
         reslist->nidle--;
         reslist->ntotal--;
         rv = destroy_resource(reslist, res);
         free_container(reslist, res);
         if (rv != APR_SUCCESS) {
-#if APR_HAS_THREADS
-            apr_thread_mutex_unlock(reslist->listlock);
-#endif
             return rv;
         }
     }
 
+    return APR_SUCCESS;
+}
+
+APR_DECLARE(apr_status_t) apr_reslist_maintain(apr_reslist_t *reslist)
+{
+    apr_status_t rv;
+
+#if APR_HAS_THREADS
+    apr_thread_mutex_lock(reslist->listlock);
+    apr_pool_owner_set(reslist->pool, 0);
+#endif
+    rv = reslist_maintain(reslist);
 #if APR_HAS_THREADS
     apr_thread_mutex_unlock(reslist->listlock);
 #endif
-    return APR_SUCCESS;
+    return rv;
 }
 
 APR_DECLARE(apr_status_t) apr_reslist_create(apr_reslist_t **reslist,
@@ -304,7 +314,7 @@ APR_DECLARE(apr_status_t) apr_reslist_create(apr_reslist_t **reslist,
     }
 #endif
 
-    rv = apr_reslist_maintain(rl);
+    rv = reslist_maintain(rl);
     if (rv != APR_SUCCESS) {
         /* Destroy what we've created so far.
          */
@@ -325,25 +335,37 @@ APR_DECLARE(apr_status_t) apr_reslist_destroy(apr_reslist_t *reslist)
     return apr_pool_cleanup_run(reslist->pool, reslist, reslist_cleanup);
 }
 
-APR_DECLARE(apr_status_t) apr_reslist_acquire(apr_reslist_t *reslist,
-                                              void **resource)
+static apr_status_t reslist_acquire(apr_reslist_t *reslist,
+                                    void **resource, int flags)
 {
     apr_status_t rv;
     apr_res_t *res;
-    apr_time_t now;
+    int fifo;
+
+    if (flags & ~APR_RESLIST_ACQUIRE_MASK) {
+        return APR_EINVAL;
+    }
+    fifo = flags & APR_RESLIST_ACQUIRE_FIFO;
 
 #if APR_HAS_THREADS
     apr_thread_mutex_lock(reslist->listlock);
     apr_pool_owner_set(reslist->pool, 0);
 #endif
-    /* If there are idle resources on the available list, use
+    /* If there are expired resources in the available list, kill
      * them right away. */
-    now = apr_time_now();
-    while (reslist->nidle > 0) {
-        /* Pop off the first resource */
-        res = pop_resource(reslist);
-        if (reslist->ttl && (now - res->freed >= reslist->ttl)) {
+    if (reslist->ttl && reslist->nidle > 0) {
+        apr_time_t now = apr_time_now();
+        do {
+            /* Peek at the oldest resource in the list */
+            res = APR_RING_LAST(&reslist->avail_list);
+            if (now - res->freed < reslist->ttl) {
+                /* If this entry is too young, none of the others
+                 * will be ready to be expired either, so we are done. */
+                break;
+            }
             /* this res is expired - kill it */
+            APR_RING_REMOVE(res, link);
+            reslist->nidle--;
             reslist->ntotal--;
             rv = destroy_resource(reslist, res);
             free_container(reslist, res);
@@ -353,8 +375,11 @@ APR_DECLARE(apr_status_t) apr_reslist_acquire(apr_reslist_t *reslist,
 #endif
                 return rv;  /* FIXME: this might cause unnecessary fails */
             }
-            continue;
-        }
+        } while (reslist->nidle > 0);
+    }
+    /* If there is still an idle resource, use it right away */
+    if (reslist->nidle > 0) {
+        res = pop_resource(reslist, fifo);
         *resource = res->opaque;
         free_container(reslist, res);
 #if APR_HAS_THREADS
@@ -383,7 +408,7 @@ APR_DECLARE(apr_status_t) apr_reslist_acquire(apr_reslist_t *reslist,
     /* If we popped out of the loop, first try to see if there
      * are new resources available for immediate use. */
     if (reslist->nidle > 0) {
-        res = pop_resource(reslist);
+        res = pop_resource(reslist, fifo);
         *resource = res->opaque;
         free_container(reslist, res);
 #if APR_HAS_THREADS
@@ -408,9 +433,22 @@ APR_DECLARE(apr_status_t) apr_reslist_acquire(apr_reslist_t *reslist,
     }
 }
 
+APR_DECLARE(apr_status_t) apr_reslist_acquire_ex(apr_reslist_t *reslist,
+                                                 void **resource, int flags)
+{
+    return reslist_acquire(reslist, resource, flags);
+}
+
+APR_DECLARE(apr_status_t) apr_reslist_acquire(apr_reslist_t *reslist,
+                                              void **resource)
+{
+    return reslist_acquire(reslist, resource, 0);
+}
+
 APR_DECLARE(apr_status_t) apr_reslist_release(apr_reslist_t *reslist,
                                               void *resource)
 {
+    apr_status_t rv;
     apr_res_t *res;
 
 #if APR_HAS_THREADS
@@ -419,13 +457,12 @@ APR_DECLARE(apr_status_t) apr_reslist_release(apr_reslist_t *reslist,
 #endif
     res = get_container(reslist);
     res->opaque = resource;
-    push_resource(reslist, res);
+    push_resource(reslist, res, 0);
+    rv = reslist_maintain(reslist);
 #if APR_HAS_THREADS
-    apr_thread_cond_signal(reslist->avail);
     apr_thread_mutex_unlock(reslist->listlock);
 #endif
-
-    return apr_reslist_maintain(reslist);
+    return rv;
 }
 
 APR_DECLARE(void) apr_reslist_timeout_set(apr_reslist_t *reslist,

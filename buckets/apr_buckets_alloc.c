@@ -45,12 +45,21 @@ struct apr_bucket_alloc_t {
 static apr_status_t alloc_cleanup(void *data)
 {
     apr_bucket_alloc_t *list = data;
+#if APR_POOL_DEBUG
+    apr_allocator_t *allocator = NULL;
+#endif
+
+#if APR_POOL_DEBUG
+    if (list->pool && list->allocator != apr_pool_allocator_get(list->pool)) {
+        allocator = list->allocator;
+    }
+#endif
 
     apr_allocator_free(list->allocator, list->blocks);
 
 #if APR_POOL_DEBUG
-    if (list->pool && list->allocator != apr_pool_allocator_get(list->pool)) {
-        apr_allocator_destroy(list->allocator);
+    if (allocator) {
+        apr_allocator_destroy(allocator);
     }
 #endif
 
@@ -121,6 +130,26 @@ APR_DECLARE_NONSTD(void) apr_bucket_alloc_destroy(apr_bucket_alloc_t *list)
         apr_allocator_destroy(list->allocator);
     }
 #endif
+}
+
+APR_DECLARE_NONSTD(apr_size_t) apr_bucket_alloc_aligned_floor(apr_bucket_alloc_t *list,
+                                                              apr_size_t size)
+{
+    if (size <= SMALL_NODE_SIZE) {
+        size = SMALL_NODE_SIZE;
+    }
+    else {
+        if (size < APR_MEMNODE_T_SIZE) {
+            size = apr_allocator_align(list->allocator, 0);
+        }
+        else {
+            size = apr_allocator_align(list->allocator,
+                                       size - APR_MEMNODE_T_SIZE);
+        }
+        size -= APR_MEMNODE_T_SIZE;
+    }
+    size -= SIZEOF_NODE_HEADER_T;
+    return size;
 }
 
 APR_DECLARE_NONSTD(void *) apr_bucket_alloc(apr_size_t in_size,

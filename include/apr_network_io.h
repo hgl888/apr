@@ -441,6 +441,31 @@ APR_DECLARE(apr_status_t) apr_sockaddr_info_copy(apr_sockaddr_t **dst,
                                                  const apr_sockaddr_t *src,
                                                  apr_pool_t *p);
 
+/* Set the zone of an IPv6 link-local address object.
+ * @param sa Socket address object
+ * @param zone_id Zone ID (textual "eth0" or numeric "3").
+ * @return Returns APR_EBADIP for non-IPv6 socket or an IPv6 address
+ * which isn't link-local.
+ */
+APR_DECLARE(apr_status_t) apr_sockaddr_zone_set(apr_sockaddr_t *sa,
+                                                const char *zone_id);
+
+
+/* Retrieve the zone of an IPv6 link-local address object.
+ * @param sa Socket address object
+ * @param name If non-NULL, set to the textual representation of the zone id
+ * @param id If non-NULL, set to the integer zone id
+ * @param p Pool from which *name is allocated if used.
+ * @return Returns APR_EBADIP for non-IPv6 socket or socket without any zone id
+ * set, or other error if the interface could not be mapped to a name.
+ * @remark Both name and id may be NULL, neither are modified if
+ * non-NULL in error cases.
+ */
+APR_DECLARE(apr_status_t) apr_sockaddr_zone_get(const apr_sockaddr_t *sa,
+                                                const char **name,
+                                                apr_uint32_t *id,
+                                                apr_pool_t *p);                                                
+    
 /**
  * Look up the host name from an apr_sockaddr_t.
  * @param hostname The hostname.
@@ -610,6 +635,7 @@ APR_DECLARE(apr_status_t) apr_socket_recvfrom(apr_sockaddr_t *from,
  * The number of bytes actually sent is stored in the len parameter.
  * The offset parameter is passed by reference for no reason; its
  * value will never be modified by the apr_socket_sendfile() function.
+ * It is possible for both bytes to be sent and an error to be returned.
  */
 APR_DECLARE(apr_status_t) apr_socket_sendfile(apr_socket_t *sock, 
                                               apr_file_t *file,

@@ -356,7 +356,7 @@ mc_conn_construct(void **conn_, void *params, apr_pool_t *pool)
         return rv;
     }
 
-    conn->buffer = apr_palloc(conn->p, BUFFER_SIZE);
+    conn->buffer = apr_palloc(conn->p, BUFFER_SIZE + 1);
     conn->blen = 0;
     conn->ms = ms;
 
@@ -1296,7 +1296,8 @@ apr_memcache_multgetp(apr_memcache_t *mc,
     /* create polling structures */
     pollfds = apr_pcalloc(temp_pool, apr_hash_count(server_queries) * sizeof(apr_pollfd_t));
     
-    rv = apr_pollset_create(&pollset, apr_hash_count(server_queries), temp_pool, 0);
+    rv = apr_pollset_create(&pollset, apr_hash_count(server_queries), temp_pool,
+                            APR_POLLSET_NOCOPY);
 
     if (rv != APR_SUCCESS) {
         query_hash_index = apr_hash_first(temp_pool, server_queries);

@@ -1,6 +1,68 @@
                                                      -*- coding: utf-8 -*-
 Changes for APR 2.0.0
 
+  *) apr_crypto: Add support for digest functions, with hashing, signing
+     and verifying. [Graham Leggett]
+
+  *) apr_json: Add support for encoding and decoding RFC8259 JSON.
+     [Moriyoshi Koizumi <mozo mozo jp>]
+
+  *) Add the apr_encode_* API that implements RFC4648 and RFC7515
+     compliant BASE64, BASE64URL, BASE32, BASE32HEX and BASE16
+     encode/decode functions. [Graham Leggett]
+
+  *) Add apr_reslist_acquire_ex() which allows to control acquire order,
+     that is LIFO (default) or FIFO.  [Yann Ylavic]
+
+  *) apr_file_write: Optimize large reads from buffered files on Windows.
+     [Evgeny Kotkov]
+
+  *) Add apr_pool_tag_get to retrieve the pool tag name.  [Joe Orton]
+
+  *) Add apr_sockaddr_zone_set, apr_sockaddr_zone_set to set and retrieve
+     the zone for link-local IPv6 addresses.  [Joe Orton]
+
+  *) apr_sockaddr_equal: Compare link-local IPv6 addresses with different
+     zones as not equal.  [Joe Orton]
+
+  *) apr_sockaddr_ip_getbuf, apr_sockaddr_ip_get: Append "%zone" for
+     IPv6 link-local addresses.  [Joe Orton]
+
+  *) Don't seek to the end when opening files with APR_FOPEN_APPEND on Windows.
+     [Evgeny Kotkov <evgeny.kotkov visualsvn.com>]
+
+  *) Fix a deadlock when writing to locked files opened with APR_FOPEN_APPEND
+     on Windows. PR 50058.
+     [Evgeny Kotkov <evgeny.kotkov visualsvn.com>]
+
+  *) apr_file_write: Optimize large writes to buffered files on Windows.
+     [Evgeny Kotkov <evgeny.kotkov visualsvn.com>]
+
+  *) apr_file_trunc: Truncating a buffered file could add unexpected
+     data after the truncate position. PR 51017.
+     [Evgeny Kotkov <evgeny.kotkov visualsvn.com>]
+
+  *) apr_file_trunc: Fix an issue where reading from a buffered file
+     after truncate could return stale data from the buffer.
+     [Evgeny Kotkov <evgeny.kotkov visualsvn.com>]
+
+  *) apr_allocator, apr_pools: Add apr_allocator_page_size() and
+     apr_allocator_min_order_set() to respectively get the (system's) page size
+     in use and set the minimum allocation size for an allocator (expressed in
+     2^order pages).  [Yann Ylavic]
+
+  *) apr_file_gets: Optimize for buffered files on Windows.
+     [Evgeny Kotkov <evgeny.kotkov visualsvn.com>]
+
+  *) apr_crypto: avoid excessive iteration in bcrypt hash.
+     [Hanno Böck <hanno hboeck.de>]
+
+  *) apr_siphash: Implement keyed hash function SipHash.  [Yann Ylavic]
+
+  *) apr_atomic: change the API of apr_atomic_casptr() apr_atomic_xchgptr()
+     functions to take a volatile pointer to void instead of pointer to
+     volatile void.  [Yann Ylavic]
+
   *) apr_crypto: Add apr_crypto_key() function which supports keys
      generated from a passphrase or a raw secret provided by the caller.
      Deprecate apr_crypto_passphrase(). [Graham Leggett]
@@ -103,6 +165,9 @@ Changes for APR 2.0.0
   *) Added Unix domain socket support.  [Mladen Turk]
 
   *) Merge APR-util into APR.  [various]
+
+  *) apr_socket_listen: Allow larger listen backlog values on Windows 8+.
+     [Evgeny Kotkov <evgeny.kotkov visualsvn.com>]
 
 Changes for APR and APR-util 1.6.x and later:
 

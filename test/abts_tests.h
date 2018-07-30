@@ -27,6 +27,7 @@ const struct testlist {
     {testdir},
     {testdso},
     {testdup},
+    {testencode},
     {testenv},
     {testescape},
     {testfile},
@@ -81,6 +82,7 @@ const struct testlist {
     {testdbd},
     {testdate},
     {testmemcache},
+    {testredis},
     {testxml},
     {testxlate},
     {testrmm},
@@ -88,7 +90,9 @@ const struct testlist {
     {testqueue},
     {testreslist},
     {testlfsabi},
-    {testskiplist}
+    {testskiplist},
+    {testsiphash},
+    {testjson}
 };
 
 #endif /* APR_TEST_INCLUDES */

@@ -92,7 +92,7 @@ sub fixcwd {
             # that we also link here to the default CPU.  Omitting the
             # /machine spec from the .dsp was not enough, MSVC put it back.
             #
-            if ($src =~ s#^(LINK32_FLAGS=.*) /machine:(x|IX|I3)86 #$1 #) {
+            if ($src =~ s#^(LINK32_FLAGS=.*) /machine:(x|IX|I3)86 #$1 #i) {
                 $verchg = -1;
             }
             print $dstfl $src; 
@@ -140,7 +140,7 @@ sub fixcwd {
         $dstfl = new IO::File $tname, "w" || die;
         while ($src = <$srcfl>) {
             if (($src =~ m/^\t"(\.\.\\)+(apr|apr-util|apr-iconv)\\.*"\\/) || 
-                ($src =~ m/^\t{\$\(INCLUDE\)}".*"\\/)) {
+                ($src =~ m/^\t\{\$\(INCLUDE\)\}".*"\\/)) {
                 $verchg = -1;
             }
             else {

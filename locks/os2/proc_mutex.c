@@ -62,7 +62,7 @@ APR_DECLARE(const char *) apr_proc_mutex_lockfile(apr_proc_mutex_t *mutex)
 
 APR_DECLARE(apr_lockmech_e) apr_proc_mutex_mech(apr_proc_mutex_t *mutex)
 {
-    return APR_LOCK_DEFAULT_TIMED;
+    return APR_LOCK_DEFAULT;
 }
 
 APR_DECLARE(const char *) apr_proc_mutex_name(apr_proc_mutex_t *mutex)
@@ -156,35 +156,21 @@ APR_DECLARE(apr_status_t) apr_proc_mutex_trylock(apr_proc_mutex_t *mutex)
         mutex->lock_count++;
     }
 
-    return APR_FROM_OS_ERROR(rc);
+    return (rc == ERROR_TIMEOUT) ? APR_EBUSY : APR_FROM_OS_ERROR(rc);
 }
 
 
 
 APR_DECLARE(apr_status_t) apr_proc_mutex_timedlock(apr_proc_mutex_t *mutex,
-                                                   apr_time_t timeout,
-                                                   int absolute)
+                                               apr_interval_time_t timeout)
 {
     ULONG rc;
     
-    if (timeout < 0) {
-        rc = DosRequestMutexSem(mutex->hMutex, SEM_INDEFINITE_WAIT);
+    if (timeout <= 0) {
+        rc = DosRequestMutexSem(mutex->hMutex, SEM_IMMEDIATE_RETURN);
     }
     else {
-        if (absolute) {
-            apr_time_t now = apr_time_now();
-            if (timeout > now) {
-                timeout -= now;
-            }
-            else {
-                timeout = 0;
-            }
-        }
-
         rc = DosRequestMutexSem(mutex->hMutex, apr_time_as_msec(timeout));
-        if (rc == ERROR_TIMEOUT) {
-            return APR_TIMEUP;
-        }
     }
 
     if (rc == 0) {
@@ -192,7 +178,7 @@ APR_DECLARE(apr_status_t) apr_proc_mutex_timedlock(apr_proc_mutex_t *mutex,
         mutex->lock_count++;
     }
 
-    return APR_FROM_OS_ERROR(rc);
+    return (rc == ERROR_TIMEOUT) ? APR_TIMEUP : APR_FROM_OS_ERROR(rc);
 }
 
 
@@ -254,7 +240,7 @@ APR_DECLARE(apr_status_t) apr_os_proc_mutex_get_ex(apr_os_proc_mutex_t *ospmutex
 {
     *ospmutex = pmutex->hMutex;
     if (mech) {
-        *mech = APR_LOCK_DEFAULT_TIMED;
+        *mech = APR_LOCK_DEFAULT;
     }
     return APR_SUCCESS;
 }
@@ -297,7 +283,7 @@ APR_DECLARE(apr_status_t) apr_os_proc_mutex_put(apr_proc_mutex_t **pmutex,
                                                 apr_os_proc_mutex_t *ospmutex,
                                                 apr_pool_t *pool)
 {
-    return apr_os_proc_mutex_put_ex(pmutex, ospmutex, APR_LOCK_DEFAULT_TIMED,
+    return apr_os_proc_mutex_put_ex(pmutex, ospmutex, APR_LOCK_DEFAULT,
                                     0, pool);
 }
 
